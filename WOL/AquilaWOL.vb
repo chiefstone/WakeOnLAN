@@ -163,7 +163,11 @@ Public Class AquilaWolLibrary
 
         Dim process As ManagementClass
         Dim scope As ManagementScope
-        Dim options As ConnectionOptions = New ConnectionOptions()
+        Dim options As New ConnectionOptions With {
+            .EnablePrivileges = True,
+            .Impersonation = ImpersonationLevel.Impersonate,
+            .Authentication = AuthenticationLevel.PacketPrivacy
+        }
         Dim query As SelectQuery
         Dim searcher As ManagementObjectSearcher
         Dim inparams, outparams As ManagementBaseObject
@@ -174,16 +178,18 @@ Public Class AquilaWolLibrary
             process = New ManagementClass("Win32_Process")
 
             If (String.IsNullOrEmpty(userid)) Then
-                scope = New ManagementScope(String.Format(wmiPath, host))
+                scope = New ManagementScope(String.Format(wmiPath, host), options)
             Else
                 options.Username = userid
                 options.Password = password
-                options.Authority = "ntlmdomain:" & domain
+                If Not String.IsNullOrWhiteSpace(domain) AndAlso
+                    Not userid.Contains("\") AndAlso Not userid.Contains("@") Then
+                    options.Username = domain.Trim() & "\" & userid
+                End If
                 scope = New ManagementScope(String.Format(wmiPath, host), options)
             End If
             process.Scope = scope
             process.Scope.Connect()
-            LocalShutdown.EnableToken("SeShutdownPrivilege")
 
             If (flags = ShutdownFlags.Sleep Or flags = ShutdownFlags.Hibernate) Then
                 inparams = process.GetMethodParameters("Create")

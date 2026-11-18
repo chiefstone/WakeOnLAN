@@ -153,12 +153,15 @@ Public Class Shutdown
             Return
         End If
 
-        If CurrentItem Is Nothing Then Close()
-        If ShutdownMode Then timer.Start()
+        If CurrentItem Is Nothing Then
+            Close()
+        ElseIf ShutdownMode Then
+            timer.Start()
+        End If
     End Sub
 
     Private Sub timer_Tick(ByVal sender As Object, ByVal e As EventArgs) Handles timer.Tick
-        If Not ShutdownMode Then
+        If Not ShutdownMode OrElse CurrentItem Is Nothing Then
             timer.Stop()
             Exit Sub
         End If
@@ -185,8 +188,11 @@ Public Class Shutdown
                 My.Settings.shutdownAction = action
 
                 Label_Operation.Text = My.Resources.Strings.BeginShutdown
-                For Each item As ListViewItem In From item1 As ListViewItem In ListView1.Items
-                                                 Where (item1.SubItems(1).Text = My.Resources.Strings.Pausing)
+                Dim localItems As ListViewItem() = ListView1.Items.Cast(Of ListViewItem)().Where(
+                    Function(item) item Is CurrentItem OrElse item.SubItems(1).Text = My.Resources.Strings.Pausing).ToArray()
+                CurrentItem = Nothing
+                ProgressBar1.Maximum += localItems.Length
+                For Each item As ListViewItem In localItems
                     Dim shutdownThread As New ShutdownThread(item, ProgressBar1, action, shut_message.Text, shut_timeout.Text, shut_force.Checked, shut_reboot.Checked)
                 Next
 
@@ -272,7 +278,7 @@ Public Class Shutdown
                 Dim shutdownThread As New ShutdownThread(item, ProgressBar1, My.Settings.shutdownAction, shut_message.Text, shut_timeout.Text, shut_force.Checked, shut_reboot.Checked)
             Next
 
-            If (ListView1.Items.Count = 1) And (Not CurrentItem Is Nothing) Then
+            If ProgressBar1.Maximum = 0 AndAlso CurrentItem IsNot Nothing Then
                 _countdownTime = 1
                 Complete()
             End If

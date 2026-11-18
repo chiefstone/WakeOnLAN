@@ -53,7 +53,10 @@ Public Class MachinesClass
 
     Public Sub Load(pool As Semaphore)
         _pool = pool
-        Import(GetFile)
+        Dim filename As String = GetFile()
+        If File.Exists(filename) Then
+            Import(filename)
+        End If
     End Sub
 
     Public Sub Save()
@@ -72,18 +75,14 @@ Public Class MachinesClass
 
     Public Sub Import(filename As String)
         Try
-            Dim serializer As New XmlSerializer(GetType(MachinesClass))
-
-            Dim fileStream As FileStream = New FileStream(filename, FileMode.Open, FileAccess.Read)
-            Machines = CType(serializer.Deserialize(fileStream), MachinesClass)
-            fileStream.Close()
+            Using fileStream As New FileStream(filename, FileMode.Open, FileAccess.Read)
+                Dim serializer As New XmlSerializer(GetType(MachinesClass))
+                Machines = CType(serializer.Deserialize(fileStream), MachinesClass)
+            End Using
             CheckUpgrade()
 
         Catch ex As Exception
 			Tracelog.WriteLine("Machines::Import " & ex.Message)
-#If DEBUG Then
-			Debugger.Break()
-#End If
 
         End Try
 
