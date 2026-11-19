@@ -112,6 +112,7 @@ Public Class ShutdownThread
                         cmd = cmd.Replace("$HOST", machine.Netbios)
 						Tracelog.WriteLine("Custom command: " & cmd)
 						Shell(cmd, AppWinStyle.Hide, False)
+                        e.Result = machine
                         Return
                     End If
                     
@@ -155,12 +156,12 @@ Public Class ShutdownThread
         Catch ex As Exception
             WriteLog(String.Format("Shutdown error on host {0}{1}: {2}", _item.Text, vbCrLf, ex.Message), EventLogEntryType.Error, EventId.Error)
             _errMessage = ex.Message
-            e.Result = 1
+            e.Result = Nothing
             Return
 
         End Try
 
-        e.Result = 0
+        e.Result = machine
 
     End Sub
 
@@ -175,8 +176,13 @@ Public Class ShutdownThread
     End Sub
 
     Private Sub backgroundWorker_RunWorkerCompleted(ByVal sender As Object, ByVal e As RunWorkerCompletedEventArgs) Handles _backgroundWorker.RunWorkerCompleted
+        Dim machine As Machine = TryCast(e.Result, Machine)
+        If machine IsNot Nothing AndAlso _action = ShutdownAction.Shutdown Then
+            If Not _reboot Then Wake.StopPendingWakeups(machine)
+            machine.RefreshStatus()
+        End If
         With _item.SubItems(1)
-            If e.Result = 0 Then
+            If machine IsNot Nothing Then
                 .ForeColor = Color.Green
                 .Text = My.Resources.Strings.Successful
                 .Tag = String.Empty ' success

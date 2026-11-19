@@ -34,6 +34,9 @@ Public Class Explorer
 
         ' This call is required by the designer.
         InitializeComponent()
+        Dim winRmHttpButton As New ToolStripButton("WinRM HTTP")
+        AddHandler winRmHttpButton.Click, AddressOf WinRmHttpButton_Click
+        ToolStrip.Items.Add(winRmHttpButton)
 
     End Sub
 
@@ -123,7 +126,7 @@ Public Class Explorer
             Case AutoUpdateEventArgs.StatusCodes.updateAvailable
                 ToolStripStatusLabel2.Text = e.Text
                 NotifyIconUpdate.Visible = True
-                NotifyIconUpdate.ShowBalloonTip(0, My.Resources.Strings.Title, e.Text, ToolTipIcon.Info)
+                NotifyIconUpdate.ShowBalloonTip(0, My.Application.Info.Title, e.Text, ToolTipIcon.Info)
 
             Case Else
                 ToolStripStatusLabel2.Text = e.Text
@@ -138,7 +141,8 @@ Public Class Explorer
 
     Private Sub NotifyIconUpdate_BalloonTipClicked(sender As Object, e As EventArgs) Handles NotifyIconUpdate.BalloonTipClicked, NotifyIconUpdate.Click
         NotifyIconUpdate.Visible = False
-        AboutBox.ShowDialog(Me)
+        AutoUpdater.force = True
+        AutoUpdater.Start(0)
     End Sub
 
     Private Sub SetMinimizeToTray()
@@ -152,7 +156,7 @@ Public Class Explorer
             If (e.CloseReason = CloseReason.UserClosing And allowClose = False) Then
                 e.Cancel = True
                 If (Not My.Settings.ackMinimize) Then
-                    MessageBox.Show(My.Resources.Strings.ackMinimized, My.Resources.Strings.Title, MessageBoxButtons.OK, MessageBoxIcon.Information)
+                    MessageBox.Show(My.Resources.Strings.ackMinimized, My.Application.Info.Title, MessageBoxButtons.OK, MessageBoxIcon.Information)
                     My.Settings.ackMinimize = True
                 End If
                 WindowState = FormWindowState.Minimized
@@ -202,11 +206,9 @@ Public Class Explorer
 	Public Sub StatusChange(ByVal hostName As String, ByVal Status As Machine.StatusCodes, IPAddress As String)
 		Try
 			Try
-				If Status = Machine.StatusCodes.Uninitialized Then
-					ListView.Items(hostName).SubItems.Item(1).Text = ListView.Groups.Item(Machine.StatusCodes.Unknown).ToString
-				Else
-					ListView.Items(hostName).SubItems.Item(1).Text = ListView.Groups.Item(Status.GetHashCode).ToString
-				End If
+				Dim groupName As String = If(Status = Machine.StatusCodes.Uninitialized OrElse Status = Machine.StatusCodes.Fail,
+				                             "Unknown", Status.ToString())
+				ListView.Items(hostName).SubItems.Item(1).Text = ListView.Groups(groupName).Header
 
 			Catch ex As Exception
 				Tracelog.WriteLine("Explorer::StatusChange::ListView exception: " _
@@ -320,7 +322,9 @@ Public Class Explorer
             listViewItem.SubItems.Add(machine.Netbios)
             listViewItem.SubItems.Add(machine.Note)
             listViewItem.SubItems.Add(machine.Group)
-            StatusChange(machine.Name, machine.Status, machine.IP)
+            Dim address As String = If(machine.Status = Machine.StatusCodes.Online AndAlso machine.Reply IsNot Nothing,
+                             machine.Reply.Address.ToString(), machine.IP)
+            StatusChange(machine.Name, machine.Status, address)
         Next
 
         ListView.ListViewItemSorter = _lvwColumnSorter
@@ -552,9 +556,9 @@ Public Class Explorer
 
         Try
             Select Case machine.Status
-                Case Machine.StatusCodes.Unknown
-                    ToolStripStatusLabel1.Text = My.Resources.Strings.OffLine
-                    ToolStripStatusLabel2.Text = String.Format(My.Resources.Strings.HostNotResponding, machine.Name)
+                Case Machine.StatusCodes.Unknown, Machine.StatusCodes.Uninitialized, Machine.StatusCodes.Fail
+                    ToolStripStatusLabel1.Text = My.Resources.Strings.lit_Unknown
+                    ToolStripStatusLabel2.Text = String.Empty
                     ToolStripProgressBar1.Value = 0
 
                 Case Machine.StatusCodes.Offline
@@ -564,6 +568,11 @@ Public Class Explorer
 
                 Case Machine.StatusCodes.Online
                     ToolStripStatusLabel1.Text = My.Resources.Strings.OnLine
+                    If machine.Reply Is Nothing Then
+                        ToolStripStatusLabel2.Text = String.Empty
+                        ToolStripProgressBar1.Visible = False
+                        Exit Sub
+                    End If
                     i = machine.Reply.RoundtripTime
                     If i > 10 Then i = 10
                     ToolStripProgressBar1.Visible = True
@@ -597,12 +606,7 @@ Public Class Explorer
     End Sub
 
     Private Sub AboutToolStripMenuItem_Click(ByVal sender As Object, ByVal e As EventArgs) Handles AboutToolStripMenuItem.Click
-        TimerUpdate.Stop()
         AboutBox.ShowDialog(Me)
-    End Sub
-
-    Private Sub ContentsToolStripMenuItem_Click(ByVal sender As Object, ByVal e As EventArgs) Handles ContentsToolStripMenuItem.Click
-        ShowHelp(Me, "default.html")
     End Sub
 
     Private Sub SearchForMachinesToolStripMenuItem_Click(ByVal sender As Object, ByVal e As EventArgs) Handles SearchForMachinesToolStripMenuItem.Click
@@ -644,8 +648,8 @@ Public Class Explorer
     End Sub
 
     Private Sub CultureManager_UICultureChanged(newCulture As CultureInfo) Handles CultureManager.UICultureChanged
-        Text = My.Resources.Strings.Title
-        NotifyIcon1.Text = My.Resources.Strings.Title
+        Text = My.Application.Info.Title
+        NotifyIcon1.Text = My.Application.Info.Title
         ListView.Groups("Online").Header = My.Resources.Strings.OnLine
         ListView.Groups("Offline").Header = My.Resources.Strings.OffLine
         ListView.Groups("Unknown").Header = My.Resources.Strings.lit_Unknown
@@ -664,6 +668,17 @@ Public Class Explorer
         ResetMonitor()
         items = ListView.SelectedItems.Cast(Of ListViewItem).Select(Function(lvi As ListViewItem) lvi.Text).ToArray()
         Shutdown.PerformShutdown(Me, items)
+    End Sub
+
+    Private Sub WinRmHttpButton_Click(sender As Object, e As EventArgs)
+        If ListView.SelectedItems.Count <> 1 Then
+            MessageBox.Show(Me, "Select one target host.", "Remote Config", MessageBoxButtons.OK, MessageBoxIcon.Information)
+            Return
+        End If
+        Dim host As Machine = Machines(ListView.SelectedItems(0).Name)
+        If host Is Nothing Then Return
+        Properties.ConfigureRemoteHost(Me, host.Netbios, host.IP, host.UserID,
+                                       String.Empty, host.Domain, host.WmiAllowedAddresses, useHttp:=True)
     End Sub
 
     Private Sub PropertiesToolStripMenuItem_Click(ByVal sender As Object, ByVal e As EventArgs) Handles PropertiesToolStripMenuItem.Click
@@ -764,10 +779,6 @@ Public Class Explorer
         Catch
 
         End Try
-    End Sub
-
-    Private Sub LicenseToolStripMenuItem_Click(ByVal sender As Object, ByVal e As EventArgs) Handles LicenseToolStripMenuItem.Click
-        License.ShowDialog(Me)
     End Sub
 
     Private Sub ContextToolStripMenuItemOpen_Click(sender As Object, e As EventArgs) Handles ContextToolStripMenuItemOpen.Click, NotifyIcon1.DoubleClick
@@ -911,10 +922,6 @@ Public Class Explorer
         If e.Button = MouseButtons.Right Then
             TreeView.SelectedNode = e.Node
         End If
-    End Sub
-
-    Private Sub DonateToolStripMenuItem_Click(sender As Object, e As EventArgs) Handles DonateToolStripMenuItem.Click
-        Process.Start(My.Settings.donate)
     End Sub
 
     Private Sub EventLogToolStripMenuItem_Click(sender As Object, e As EventArgs) Handles EventLogToolStripMenuItem.Click, EventLogToolStripButton.Click

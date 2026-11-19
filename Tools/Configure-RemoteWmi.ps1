@@ -2,7 +2,8 @@
 #requires -RunAsAdministrator
 <#
 Run in 64-bit Windows PowerShell 5.1 on the target computer.
-Apply requires an existing local administrator account. No password is stored.
+Apply requires an existing local administrator account, the target PC IPv4 address,
+and the controller IP addresses allowed through the firewall. No password is stored.
 Restore replaces the saved ACLs and the two saved user-right assignments.
 Use only a backup created by this script on this computer and kept in a trusted location.
 #>
@@ -11,7 +12,8 @@ param(
     [ValidateSet('Check', 'Apply', 'Restore')][string]$Mode = 'Check',
     [string]$Account,
     [string]$BackupPath,
-    [string[]]$AllowedAddress = @('192.168.1.10', '192.168.1.102', '192.168.1.103')
+    [string]$TargetAddress,
+    [string[]]$AllowedAddress
 )
 $ErrorActionPreference = 'Stop'
 if ($PSVersionTable.PSEdition -eq 'Core' -or -not [Environment]::Is64BitProcess) {
@@ -130,8 +132,26 @@ if ($Mode -eq 'Restore') {
     return
 }
 
+if ($Mode -eq 'Apply' -and (-not $TargetAddress -or -not $AllowedAddress)) {
+    throw 'Apply requires -TargetAddress (this target PC IPv4 address) and -AllowedAddress (controller IP addresses).'
+}
+$localAddresses = @(Get-NetIPAddress -AddressFamily IPv4)
+if ($TargetAddress -and $TargetAddress -notin $localAddresses.IPAddress) {
+    throw "Run this script on the target PC with IPv4 address $TargetAddress."
+}
+if ($AllowedAddress) {
+    $AllowedAddress = @($AllowedAddress | ForEach-Object {
+        $ip = $null
+        if (-not [System.Net.IPAddress]::TryParse($_, [ref]$ip) -or
+            $ip.Equals([System.Net.IPAddress]::Any) -or $ip.Equals([System.Net.IPAddress]::IPv6Any)) {
+            throw "Specify an individual controller IP address. Invalid address: $_"
+        }
+        $ip.ToString()
+    } | Select-Object -Unique)
+}
+
 Get-Service RpcSs, DcomLaunch, Winmgmt | Format-Table Name, Status
-Get-NetIPAddress -AddressFamily IPv4 | Format-Table InterfaceAlias, IPAddress
+$localAddresses | Format-Table InterfaceAlias, IPAddress
 $registryItems | ForEach-Object { Read-Registry $_ } | Format-Table Name, Exists, Value
 if (-not $Account) { throw 'Specify -Account COMPUTER\User for Check or Apply.' }
 $sid = ([System.Security.Principal.NTAccount]$Account).Translate(
@@ -157,12 +177,49 @@ if ($Mode -eq 'Check') {
     Write-Host 'Check completed. Apply creates a backup before changing settings.'
     return
 }
-if (-not (Get-NetIPAddress -AddressFamily IPv4 | Where-Object IPAddress -eq '192.168.1.101')) {
-    throw 'Apply must run on the target computer with address 192.168.1.101.'
-}
-foreach ($address in $AllowedAddress) { [void][System.Net.IPAddress]::Parse($address) }
-if (Get-NetFirewallRule -PolicyStore PersistentStore -Name 'WakeOnLAN-WMI-*' -ErrorAction SilentlyContinue) {
-    throw 'A previous configuration exists. Restore its backup before applying again.'
+$managedRules = @(Get-NetFirewallRule -PolicyStore PersistentStore -Name 'WakeOnLAN-WMI-*' -ErrorAction SilentlyContinue)
+if ($managedRules.Count -gt 0) {
+    $rpc = @($managedRules | Where-Object Name -Match '^WakeOnLAN-WMI-RPC-[0-9a-f]{32}$')
+    $service = @($managedRules | Where-Object Name -Match '^WakeOnLAN-WMI-Service-[0-9a-f]{32}$')
+    if ($managedRules.Count -ne 2 -or $rpc.Count -ne 1 -or $service.Count -ne 1 -or
+        ($rpc[0].Name -replace '^WakeOnLAN-WMI-RPC-', '') -ne ($service[0].Name -replace '^WakeOnLAN-WMI-Service-', '')) {
+        throw 'The existing WakeOnLAN firewall rules do not form a complete pair. Inspect or restore the previous configuration.'
+    }
+
+    $previousSources = @{}
+    foreach ($rule in $managedRules) {
+        if ($rule.Enabled -ne 'True' -or $rule.Direction -ne 'Inbound' -or $rule.Action -ne 'Allow') {
+            throw "The existing managed rule $($rule.Name) is not an enabled inbound allow rule."
+        }
+        $previousSources[$rule.Name] = @($rule | Get-NetFirewallAddressFilter | Select-Object -ExpandProperty RemoteAddress)
+    }
+
+    $changed = @()
+    try {
+        foreach ($rule in $managedRules) {
+            if (@(Compare-Object ($AllowedAddress | Sort-Object) ($previousSources[$rule.Name] | Sort-Object)).Count) {
+                $changed += $rule.Name
+                $rule | Get-NetFirewallAddressFilter | Set-NetFirewallAddressFilter -RemoteAddress $AllowedAddress
+            }
+            $activeSources = @(Get-NetFirewallRule -PolicyStore ActiveStore -Name $rule.Name |
+                Get-NetFirewallAddressFilter | Select-Object -ExpandProperty RemoteAddress)
+            if (@(Compare-Object ($AllowedAddress | Sort-Object) ($activeSources | Sort-Object)).Count) {
+                throw "The effective sources for $($rule.Name) did not match the requested addresses."
+            }
+        }
+    } catch {
+        foreach ($name in $changed) {
+            try {
+                Get-NetFirewallRule -PolicyStore PersistentStore -Name $name |
+                    Get-NetFirewallAddressFilter | Set-NetFirewallAddressFilter -RemoteAddress $previousSources[$name]
+            } catch {
+                Write-Warning "Could not restore previous sources for ${name}: $($_.Exception.Message)"
+            }
+        }
+        throw
+    }
+    Write-Host "WMI allowed sources verified: $($AllowedAddress -join ', '). Existing permissions and restore backup were retained."
+    return
 }
 if (-not $BackupPath) {
     $BackupPath = Join-Path $env:ProgramData ('WakeOnLAN-WmiBackup\' + (Get-Date -Format 'yyyyMMdd-HHmmss-fff'))

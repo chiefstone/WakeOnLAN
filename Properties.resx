@@ -973,7 +973,7 @@
     <value>0</value>
   </data>
   <data name="lbIP.Text" xml:space="preserve">
-    <value>Local IP Address</value>
+    <value>Target IP Address</value>
   </data>
   <data name="lbIP.TextAlign" type="System.Drawing.ContentAlignment, System.Drawing">
     <value>MiddleRight</value>

@@ -67,7 +67,7 @@ Namespace My
 
 #If Not DEBUG Then
 			If (Settings.ShowSplash) Then
-				Splash.ShowSplash(Resources.Splash, Resources.Strings.Title, version, Resources.Strings.Copyright)
+				Splash.ShowSplash(Resources.Splash, Application.Info.Title, version, Resources.Strings.Copyright)
 			End If
 #End If
 
@@ -145,7 +145,7 @@ Namespace My
 			Const SW_SHOW As Int32 = 5
 			Dim hwnd As IntPtr
 
-			hwnd = FindWindow(Nothing, Resources.Strings.Title)
+			hwnd = FindWindow(Nothing, Application.Info.Title)
 
 			If hwnd <> IntPtr.Zero Then
 				ShowWindow(hwnd, SW_SHOW)
@@ -190,25 +190,25 @@ Namespace My
             End Try
 
             Try
-				For i As Int16 = 0 To CommandLineArgs.Count - 1
-					If (CommandLineArgs(i) = "-p") Then
-						Settings.dbPath = CommandLineArgs(i + 1)
-						Exit For
-					End If
-				Next
+                For i As Integer = 0 To CommandLineArgs.Count - 2
+                    If String.Equals(CommandLineArgs(i), "-p", StringComparison.OrdinalIgnoreCase) Then
+                        Settings.dbPath = IO.Path.GetFullPath(CommandLineArgs(i + 1))
+                        Return
+                    End If
+                Next
 
 				regKey = Registry.CurrentUser.OpenSubKey("Software\Aquila Technology\WakeOnLAN")
 				If regKey Is Nothing Then
 					regKey = Registry.CurrentUser.CreateSubKey("Software\Aquila Technology\WakeOnLAN", RegistryKeyPermissionCheck.ReadWriteSubTree, RegistryOptions.None)
 				End If
-				database = regKey.GetValue("Database", IO.Directory.GetParent(Computer.FileSystem.SpecialDirectories.AllUsersApplicationData.ToString).ToString, RegistryValueOptions.None)
+				database = regKey.GetValue("Database", IO.Path.GetDirectoryName(MachinesClass.DefaultDatabasePath), RegistryValueOptions.None)
 				regKey.Close()
 
 				filename = IO.Path.GetFileName(Settings.dbPath)
 				If (String.IsNullOrEmpty(filename)) Then
 					filename = "machines.xml"
 				End If
-				newPath = IO.Path.Combine(database, filename)
+				newPath = MachinesClass.ResolveDatabasePath(IO.Path.Combine(database, filename))
 
 				If (Settings.dbPath <> newPath) Then
 					Settings.dbPath = newPath

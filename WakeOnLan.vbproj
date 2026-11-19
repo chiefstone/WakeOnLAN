@@ -745,6 +745,7 @@
       <DesignTime>True</DesignTime>
       <DependentUpon>OptionProperties.de.resx</DependentUpon>
     </Compile>
+    <Compile Include="WinRmSetup.vb"><SubType>Form</SubType></Compile>
     <Compile Include="Properties.Designer.vb">
       <DependentUpon>Properties.vb</DependentUpon>
     </Compile>
@@ -1934,10 +1935,32 @@
       <FileType>Satellite</FileType>
     </PublishFile>
   </ItemGroup>
+  <ItemGroup>
+    <EmbeddedResource Include="Tools\Initialize-WinRmHttps.ps1">
+      <LogicalName>Initialize-WinRmHttps.ps1</LogicalName>
+    </EmbeddedResource>
+    <EmbeddedResource Include="Tools\Invoke-RemoteWmiConfig.ps1">
+      <LogicalName>Invoke-RemoteWmiConfig.ps1</LogicalName>
+    </EmbeddedResource>
+    <EmbeddedResource Include="Tools\Configure-RemoteWmi.ps1">
+      <LogicalName>Configure-RemoteWmi.ps1</LogicalName>
+    </EmbeddedResource>
+  </ItemGroup>
   <Import Project="$(MSBuildBinPath)\Microsoft.VisualBasic.targets" />
   <PropertyGroup>
     <PreBuildEvent>
     </PreBuildEvent>
     <PostBuildEvent>Powershell -File "$(ProjectDir)build.ps1" -config "$(ConfigurationName)" -source $(SolutionDir) -project $(ProjectName) -target $(TargetPath)</PostBuildEvent>
   </PropertyGroup>
+  <Target Name="CopyWakeOnLanMachineConfig" AfterTargets="Build">
+    <PropertyGroup>
+      <WakeOnLanConfigDirectory>$([MSBuild]::GetRegistryValue('HKEY_CURRENT_USER\Software\Aquila Technology\WakeOnLAN', 'Database', '$(ProgramData)\Aquila Technology\WakeOnLan'))</WakeOnLanConfigDirectory>
+      <WakeOnLanMachineConfig Condition="'$(WakeOnLanMachineConfig)' == ''">$(WakeOnLanConfigDirectory)\machines.xml</WakeOnLanMachineConfig>
+      <WakeOnLanMachineConfigFullPath>$([System.IO.Path]::GetFullPath('$(WakeOnLanMachineConfig)'))</WakeOnLanMachineConfigFullPath>
+    </PropertyGroup>
+    <Copy SourceFiles="$(WakeOnLanMachineConfig)"
+          DestinationFiles="$(TargetDir)machines.xml"
+          Condition="Exists('$(WakeOnLanMachineConfig)') And '$(WakeOnLanMachineConfigFullPath)' != '$(TargetDir)machines.xml'"
+          SkipUnchangedFiles="true" />
+  </Target>
 </Project>

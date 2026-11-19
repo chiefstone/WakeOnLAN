@@ -22,6 +22,7 @@ Imports System.Net
 Imports System.Linq
 Imports Machines
 Imports System.Threading
+Imports System.Management
 
 Module MachinesModule
     Public Machines As New MachinesClass
@@ -65,9 +66,23 @@ Public Class MachinesClass
         Dirty = False
     End Sub
 
+    Friend Shared ReadOnly Property DefaultDatabasePath As String
+        Get
+            Return Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData),
+                                "Aquila Technology", "WakeOnLan", "machines.xml")
+        End Get
+    End Property
+
+    Friend Shared Function ResolveDatabasePath(configuredPath As String) As String
+        If File.Exists(configuredPath) Then Return configuredPath
+
+        Dim bundledPath As String = Path.Combine(Path.GetDirectoryName(GetType(MachinesClass).Assembly.Location), "machines.xml")
+        Return If(File.Exists(bundledPath), bundledPath, configuredPath)
+    End Function
+
     Public Function GetFile() As String
         If String.IsNullOrEmpty(My.Settings.dbPath) Then
-            My.Settings.dbPath = IO.Path.Combine(IO.Directory.GetParent(My.Computer.FileSystem.SpecialDirectories.AllUsersApplicationData.ToString).ToString, "machines.xml")
+            My.Settings.dbPath = ResolveDatabasePath(DefaultDatabasePath)
         End If
 
         Return My.Settings.dbPath
@@ -93,7 +108,7 @@ Public Class MachinesClass
 		Tracelog.Indent()
 
 		For Each machine As Machine In Machines
-            machine.Pool = _pool
+            PrepareMonitor(machine)
 
             If (machine.Broadcast = "") Then
                 Dirty = True
@@ -162,12 +177,55 @@ Public Class MachinesClass
 		AddHandler machine.TraceEvent, AddressOf My.Forms.Explorer.TraceEvent
 
 		If My.Forms.Explorer.PingToolStripButton.Checked Then
-            machine.Pool = _pool
+            PrepareMonitor(machine)
             machine.Run()
         End If
         Dirty = True
 
     End Sub
+
+    Private Shared Sub PrepareMonitor(machine As Machine)
+        machine.Pool = _pool
+        machine.WindowsStatusProbe = Function(target) ProbeWindows(machine, target)
+    End Sub
+
+    Private Shared Function ProbeWindows(machine As Machine, target As String) As Machine.StatusCodes
+        Dim options As New ConnectionOptions With {
+            .Authentication = AuthenticationLevel.PacketPrivacy,
+            .Impersonation = ImpersonationLevel.Impersonate
+        }
+        If Not String.IsNullOrWhiteSpace(machine.UserID) Then
+            Dim account As String = machine.UserID.Trim()
+            If Not String.IsNullOrWhiteSpace(machine.Domain) AndAlso
+                Not account.Contains("\") AndAlso Not account.Contains("@") Then
+                account = machine.Domain.Trim() & "\" & account
+            End If
+            options.Username = account
+            options.Password = New Encryption().Decrypt(machine.Password)
+        End If
+
+        Try
+            Dim scope As New ManagementScope("\\" & target & "\root\cimv2", options)
+            Dim query As New ObjectQuery("SELECT LastBootUpTime FROM Win32_OperatingSystem")
+            Dim enumeration As New EnumerationOptions With {.Timeout = TimeSpan.FromSeconds(5), .Rewindable = False}
+            Using searcher As New ManagementObjectSearcher(scope, query, enumeration)
+                Using systems As ManagementObjectCollection = searcher.Get()
+                    For Each system As ManagementObject In systems
+                        Using system
+                            If Not String.IsNullOrWhiteSpace(TryCast(system("LastBootUpTime"), String)) Then
+                                Return Machine.StatusCodes.Online
+                            End If
+                        End Using
+                    Next
+                End Using
+            End Using
+        Catch ex As Runtime.InteropServices.COMException When ex.ErrorCode = &H800706BA
+            ' RPC server unavailable. Authentication and other errors remain unknown.
+            Return Machine.StatusCodes.Offline
+        End Try
+
+        Return Machine.StatusCodes.Unknown
+    End Function
 
     Public Sub Update(ByVal machine As Machine)
         Dirty = True

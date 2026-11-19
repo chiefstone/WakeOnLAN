@@ -168,14 +168,12 @@ Public Class AquilaWolLibrary
             .Impersonation = ImpersonationLevel.Impersonate,
             .Authentication = AuthenticationLevel.PacketPrivacy
         }
-        Dim query As SelectQuery
-        Dim searcher As ManagementObjectSearcher
+
         Dim inparams, outparams As ManagementBaseObject
         Dim retval As UInteger
         Const wmiPath As String = "\\{0}\root\cimv2"
 
         Try
-            process = New ManagementClass("Win32_Process")
 
             If (String.IsNullOrEmpty(userid)) Then
                 scope = New ManagementScope(String.Format(wmiPath, host), options)
@@ -188,10 +186,10 @@ Public Class AquilaWolLibrary
                 End If
                 scope = New ManagementScope(String.Format(wmiPath, host), options)
             End If
-            process.Scope = scope
-            process.Scope.Connect()
+            scope.Connect()
 
             If (flags = ShutdownFlags.Sleep Or flags = ShutdownFlags.Hibernate) Then
+                process = New ManagementClass("Win32_Process") With {.Scope = scope}
                 inparams = process.GetMethodParameters("Create")
 
                 Select Case flags
@@ -206,18 +204,7 @@ Public Class AquilaWolLibrary
                 outparams = process.InvokeMethod("Create", inparams, Nothing)
                 retval = outparams("ReturnValue")
             Else
-                query = New SelectQuery("SELECT * FROM Win32_OperatingSystem WHERE Primary=true")
-                searcher = New ManagementObjectSearcher(scope, query)
-
-                For Each managementObject As ManagementObject In searcher.Get()
-                    Debug.WriteLine(managementObject("Caption"))
-
-                    inparams = managementObject.GetMethodParameters("Win32Shutdown")
-                    inparams("Flags") = flags
-                    outparams = managementObject.InvokeMethod("Win32Shutdown", inparams, Nothing)
-
-                    retval = outparams("ReturnValue")
-                Next
+                retval = InvokeWmiShutdown(scope, flags)
             End If
 
         Catch ex As Exception
@@ -230,6 +217,38 @@ Public Class AquilaWolLibrary
         End If
 
     End Sub
+
+    Private Shared Function InvokeWmiShutdown(scope As ManagementScope, flags As ShutdownFlags) As UInteger
+        Dim timeout = TimeSpan.FromSeconds(60)
+        Dim query As New ObjectQuery("SELECT * FROM Win32_OperatingSystem")
+        Dim enumeration As New EnumerationOptions With {.Timeout = timeout, .Rewindable = False}
+
+        Using searcher As New ManagementObjectSearcher(scope, query, enumeration)
+            Using systems = searcher.Get()
+                For Each system As ManagementObject In systems
+                    Using system
+                        Using parameters = system.GetMethodParameters("Win32Shutdown")
+                            parameters("Flags") = CInt(flags)
+                            parameters("Reserved") = 0
+                            Using result = system.InvokeMethod("Win32Shutdown", parameters, Nothing)
+                                If result Is Nothing OrElse result("ReturnValue") Is Nothing Then
+                                    Throw New WOLException("No Win32Shutdown status was received. Check the target PC before retrying.")
+                                End If
+
+                                Dim code = Convert.ToUInt32(result("ReturnValue"))
+                                If code = 1191UI Then
+                                    Throw New WOLException("Win32Shutdown returned 1191. Other users are signed in. Ask them to save their work and sign out, or explicitly select forced shutdown.")
+                                End If
+                                Return code
+                            End Using
+                        End Using
+                    End Using
+                Next
+            End Using
+        End Using
+
+        Throw New WOLException("WMI did not return a Win32_OperatingSystem instance.")
+    End Function
 
     Private Shared Sub ShutdownLegacy(host As String,
                                     flags As ShutdownFlags,

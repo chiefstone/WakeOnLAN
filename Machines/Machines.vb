@@ -28,7 +28,10 @@ Imports System.Threading
 Public Class Machine
 
     <NonSerialized> Private WithEvents _backgroundWorker As New BackgroundWorker
-    <NonSerialized> Private WithEvents ping As New Ping
+    <NonSerialized> Private ReadOnly ping As New Ping
+    <NonSerialized> Private _monitoringRequested As Boolean
+    <NonSerialized> Private _pendingStatus As StatusCodes = StatusCodes.Unknown
+    <NonSerialized> Private _pendingAddress As IPAddress
 
     Private Declare Function SendARP Lib "iphlpapi.dll" (ByVal DestIP As Int32, ByVal SrcIP As Int32, ByVal pMacAddr As Byte(), ByRef PhyAddrLen As Integer) As Integer
 
@@ -69,12 +72,14 @@ Public Class Machine
     Public Property Password As String = String.Empty
     Public Property Domain As String = String.Empty
     Public Property ShutdownMethod As ShutdownMethods = ShutdownMethods.WMI
+    Public Property WmiAllowedAddresses As String = String.Empty
     Public Property KeepAlive As Boolean = False
     Public Property RepeatCount As Integer = 1
 
 	<XmlIgnore()> Public Status As StatusCodes = StatusCodes.Uninitialized
 	<NonSerialized> <XmlIgnore()> Public Reply As PingReply
     <NonSerialized> <XmlIgnore()> Public Pool As Semaphore
+    <NonSerialized> <XmlIgnore()> Public WindowsStatusProbe As Func(Of String, StatusCodes)
     <NonSerialized> <XmlIgnore()> Const data As String = "abcdefghijklmnopqrstuvwabcdefghi"
 	<NonSerialized> <XmlIgnore()> Dim buffer As Byte() = Text.Encoding.ASCII.GetBytes(data)
 	<NonSerialized> <XmlIgnore()> Public message As String
@@ -91,15 +96,12 @@ Public Class Machine
     End Function
 
     Public Sub Run()
+        _monitoringRequested = True
 		If _backgroundWorker.IsBusy Then Exit Sub
 
 		_backgroundWorker.WorkerReportsProgress = True
-        If String.IsNullOrEmpty(Netbios) Then
-            If String.IsNullOrEmpty(IP) Then Exit Sub
-            _backgroundWorker.RunWorkerAsync(IP)
-        Else
-            _backgroundWorker.RunWorkerAsync(Netbios)
-        End If
+        Dim target As String = If(String.IsNullOrWhiteSpace(IP), Netbios, IP)
+        If Not String.IsNullOrWhiteSpace(target) Then _backgroundWorker.RunWorkerAsync(target.Trim())
     End Sub
 
     Public Function IsBusy() As Boolean
@@ -107,138 +109,113 @@ Public Class Machine
     End Function
 
     Public Sub Cancel()
-        _backgroundWorker.CancelAsync()
+        _monitoringRequested = False
+        If _backgroundWorker.IsBusy Then _backgroundWorker.CancelAsync()
     End Sub
 
-    Private Sub DoWork(ByVal sender As Object, ByVal e As DoWorkEventArgs) Handles _backgroundWorker.DoWork
-        Do
+    Public Sub RefreshStatus()
+        If _backgroundWorker.IsBusy Then _backgroundWorker.CancelAsync()
+        ResetStatus()
+        If _monitoringRequested AndAlso Not _backgroundWorker.IsBusy Then Run()
+    End Sub
+
+    Private Sub DoWork(sender As Object, e As DoWorkEventArgs) Handles _backgroundWorker.DoWork
+        While Not _backgroundWorker.CancellationPending
+            Pool.WaitOne()
             Try
-                Dim options As PingOptions = New PingOptions() With {
-                    .Ttl = TTL,
-                    .DontFragment = True
-                }
+                If _backgroundWorker.CancellationPending Then Return
 
-                Debug.Assert(Not IsNothing(Pool))
-                Pool.WaitOne()
-                Reply = ping.Send(e.Argument, 10000, buffer, options)
-
-                Select Case Reply.Status
-                    Case IPStatus.Success
-                        _backgroundWorker.ReportProgress(StatusCodes.Online)
-
-                    Case IPStatus.TimedOut, IPStatus.DestinationNetworkUnreachable, IPStatus.DestinationHostUnreachable
-                        _backgroundWorker.ReportProgress(StatusCodes.Offline)
-
-                    Case Else
-                        _backgroundWorker.ReportProgress(StatusCodes.Unknown)
-
-                End Select
-
+                Dim probe As Func(Of String, StatusCodes) = WindowsStatusProbe
+                If probe IsNot Nothing AndAlso ShutdownMethod <> ShutdownMethods.Custom Then
+                    _backgroundWorker.ReportProgress(CInt(probe(CStr(e.Argument))))
+                Else
+                    ProbeWithPing(CStr(e.Argument))
+                End If
             Catch ex As Exception
-				message = ex.Message
-				_backgroundWorker.ReportProgress(StatusCodes.Fail)
-
-			Finally
+                _backgroundWorker.ReportProgress(CInt(StatusCodes.Fail), ex.Message)
+            Finally
                 Pool.Release()
-                Thread.Sleep(2000)
-
             End Try
 
-        Loop Until _backgroundWorker.CancellationPending = True
+            If Not _backgroundWorker.CancellationPending Then Thread.Sleep(1000)
+        End While
     End Sub
 
-	Private Sub backgroundWorker_ProgressChanged(ByVal sender As Object, ByVal e As ProgressChangedEventArgs) Handles _backgroundWorker.ProgressChanged
-		Dim newStatus As StatusCodes
-        Dim newIpAddress As String = String.Empty
+    Private Sub ProbeWithPing(target As String)
+        Dim options As New PingOptions With {.Ttl = TTL, .DontFragment = True}
+        Dim response As PingReply = ping.Send(target, 3000, buffer, options)
+        Dim observedStatus As StatusCodes
 
-        Try
-			If _backgroundWorker.CancellationPending Then Exit Sub
+        Select Case response.Status
+            Case IPStatus.Success
+                observedStatus = If(MatchesConfiguredMac(response.Address), StatusCodes.Online, StatusCodes.Unknown)
+            Case IPStatus.TimedOut, IPStatus.DestinationNetworkUnreachable, IPStatus.DestinationHostUnreachable
+                observedStatus = StatusCodes.Offline
+            Case Else
+                observedStatus = StatusCodes.Unknown
+        End Select
 
-			Select Case e.ProgressPercentage
-				Case StatusCodes.Online
-					newStatus = StatusCodes.Online
-					For Each ipAddress As IPAddress In From IPA1 In Dns.GetHostAddresses(Netbios) Where IPA1.AddressFamily.ToString() = "InterNetwork"
+        _backgroundWorker.ReportProgress(CInt(observedStatus), response)
+    End Sub
 
-						If IP = String.Empty Then
-							newIpAddress = ipAddress.ToString()
-						Else
-							newIpAddress = IP
-						End If
+    Private Function MatchesConfiguredMac(address As IPAddress) As Boolean
+        If Not String.IsNullOrWhiteSpace(IP) OrElse String.IsNullOrWhiteSpace(MAC) OrElse
+            address.AddressFamily <> Sockets.AddressFamily.InterNetwork Then Return True
 
-						If Status = StatusCodes.Uninitialized Then
-							' if the host is DHCP, try to resolve the correct IP and verify the MAC.
-							' if we cannot find a matching interface with our MAC, assume the host is OFFLINE.
-							If IP = String.Empty Then
-								newStatus = StatusCodes.Offline
+        Dim remoteMac(5) As Byte
+        Dim length = remoteMac.Length
+        Dim result = SendARP(BitConverter.ToInt32(address.GetAddressBytes(), 0), 0, remoteMac, length)
+        ' ERROR_BAD_NET_NAME can occur when the responding host is on another subnet.
+        If result = 0 Then Return CompareMac(BitConverter.ToString(remoteMac, 0, length), MAC) = 0
+        Return result = 67
+    End Function
 
-								Dim remoteIp As Integer
-								Dim remoteMac() As Byte = New Byte(5) {}
-								Dim dWord As Integer
+    Private Sub backgroundWorker_ProgressChanged(sender As Object, e As ProgressChangedEventArgs) Handles _backgroundWorker.ProgressChanged
+        If _backgroundWorker.CancellationPending Then Return
 
-								Try
-									remoteIp = ipAddress.GetHashCode()
-									RaiseEvent TraceEvent(Name & ": dns returned: " & ipAddress.ToString(), TraceMethods.WriteLine)
+        Dim observedStatus = CType(e.ProgressPercentage, StatusCodes)
+        Dim response As PingReply = TryCast(e.UserState, PingReply)
+        message = TryCast(e.UserState, String)
+        If observedStatus = StatusCodes.Fail Then observedStatus = StatusCodes.Unknown
+        Dim respondingAddress As IPAddress = If(observedStatus = StatusCodes.Online AndAlso response IsNot Nothing, response.Address, Nothing)
 
-									If remoteIp <> 0 Then
-										dWord = SendARP(remoteIp, 0, remoteMac, remoteMac.Length)
-										If dWord = 0 Or dWord = 67 Then
-											'
-											' we found a matching MAC, the host is officially ONLINE
-											' 67 = ERROR_BAD_NET_NAME: if host on another subnet, just ignore the error
-											'
-											If CompareMac(BitConverter.ToString(remoteMac, 0, remoteMac.Length), MAC) = 0 Or dWord = 67 Then
-												newStatus = StatusCodes.Online
-												newIpAddress = ipAddress.ToString()
-												RaiseEvent TraceEvent(Name & ": match: " & newIpAddress, TraceMethods.WriteLine)
-												Exit For
-											End If
-										End If
-									End If
+        If observedStatus <> StatusCodes.Unknown Then
+            Dim sameObservation As Boolean = observedStatus = _pendingStatus AndAlso
+                Object.Equals(respondingAddress, _pendingAddress)
+            _pendingStatus = observedStatus
+            _pendingAddress = respondingAddress
 
-								Catch
+            ' Confirm transitions with two consecutive observations of the same result.
+            If Not sameObservation Then Return
+        Else
+            _pendingStatus = StatusCodes.Unknown
+            _pendingAddress = Nothing
+        End If
 
-								End Try
-							End If
-						End If
-					Next
+        Dim addressChanged As Boolean = observedStatus = StatusCodes.Online AndAlso
+            Not Object.Equals(If(Reply Is Nothing, Nothing, Reply.Address), respondingAddress)
+        Reply = If(observedStatus = StatusCodes.Online, response, Nothing)
+        If Status = observedStatus AndAlso Not addressChanged Then Return
 
-					If (Status <> newStatus) Then
-						Status = newStatus
-						RaiseEvent StatusChange(Name, Status, newIpAddress)
-					End If
+        Status = observedStatus
+        Dim address As String = If(Status = StatusCodes.Online,
+                                   If(respondingAddress IsNot Nothing, respondingAddress.ToString(), IP),
+                                   If(message, String.Empty))
+        RaiseEvent StatusChange(Name, Status, address)
+    End Sub
 
-				Case StatusCodes.Offline
-					If Status <> StatusCodes.Offline Then
-						Status = StatusCodes.Offline
-						RaiseEvent StatusChange(Name, Status, String.Empty)
-					End If
+    Private Sub RunWorkerCompleted(sender As Object, e As RunWorkerCompletedEventArgs) Handles _backgroundWorker.RunWorkerCompleted
+        ResetStatus()
+        If _monitoringRequested Then Run()
+    End Sub
 
-				Case StatusCodes.Unknown, StatusCodes.Fail, StatusCodes.Uninitialized
-					If Status <> StatusCodes.Unknown Then
-						Status = StatusCodes.Unknown
-						RaiseEvent StatusChange(Name, Status, message)
-					End If
-
-			End Select
-
-		Catch ex As Exception
-			RaiseEvent TraceEvent("backgroundWorker_ProgressChanged::Exception: " & ex.Message, TraceMethods.WriteLine)
-			Debug.Fail(ex.Message)
-
-		End Try
-
-	End Sub
-
-	Private Sub RunWorkerCompleted(ByVal sender As Object, ByVal e As RunWorkerCompletedEventArgs) Handles _backgroundWorker.RunWorkerCompleted
-        Try
-			Status = StatusCodes.Unknown
-			RaiseEvent StatusChange(Name, Status, String.Empty)
-
-        Catch ex As Exception
-            Debug.Fail(ex.Message)
-
-        End Try
-
+    Private Sub ResetStatus()
+        _pendingStatus = StatusCodes.Unknown
+        _pendingAddress = Nothing
+        Reply = Nothing
+        If Status = StatusCodes.Unknown Then Return
+        Status = StatusCodes.Unknown
+        RaiseEvent StatusChange(Name, Status, String.Empty)
     End Sub
 
     Private Function CompareMac(mac1 As String, mac2 As String) As Int32

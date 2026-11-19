@@ -80,6 +80,12 @@ Module Wake
         End Try
 
     End Sub
+    Public Sub StopPendingWakeups(machine As Machine)
+        SyncLock thisLock
+            repeatMachine.RemoveAll(Function(entry) String.Equals(entry.Name, machine.Name, StringComparison.OrdinalIgnoreCase))
+        End SyncLock
+    End Sub
+
     Private Sub RepeatTimerEvent(ByVal sender As Object, ByVal e As EventArgs)
         SyncLock thisLock
             For i As Integer = repeatMachine.Count - 1 To 0 Step -1

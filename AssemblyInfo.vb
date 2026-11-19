@@ -1,4 +1,4 @@
-'    WakeOnLAN - Wake On LAN
+﻿'    WakeOnLAN - Wake On LAN
 '    Copyright (C) 2004-2019 Aquila Technology, LLC. <webmaster@aquilatech.com>
 '
 '    This file is part of WakeOnLAN.
@@ -28,10 +28,10 @@ Imports System.Runtime.InteropServices
 
 ' Review the values of the assembly attributes
 
-<Assembly: AssemblyTitle("WakeOnLan")> 
+<Assembly: AssemblyTitle("光电测量验证系统-远程控制管理软件")>
 <Assembly: AssemblyDescription("Wake On Lan")> 
 <Assembly: AssemblyCompany("Aquila Technology")> 
-<Assembly: AssemblyProduct("WakeOnLan")>
+<Assembly: AssemblyProduct("光电测量验证系统-远程控制管理软件")>
 <Assembly: AssemblyCopyright("Copyright (c) 2004 - 2019, Aquila Technology")>
 <Assembly: AssemblyTrademark("All rights reserved.")> 
 <Assembly: CLSCompliant(True)> 

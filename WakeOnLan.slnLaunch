@@ -1,0 +1,11 @@
+[
+  {
+    "Name": "WakeOnLan Desktop",
+    "Projects": [
+      {
+        "Path": "WakeOnLan.vbproj",
+        "Action": "Start"
+      }
+    ]
+  }
+]

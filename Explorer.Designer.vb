@@ -47,8 +47,6 @@ Partial Class Explorer
     Friend WithEvents ToolsToolStripMenuItem As System.Windows.Forms.ToolStripMenuItem
     Friend WithEvents OptionsToolStripMenuItem As System.Windows.Forms.ToolStripMenuItem
     Friend WithEvents HelpToolStripMenuItem As System.Windows.Forms.ToolStripMenuItem
-    Friend WithEvents ContentsToolStripMenuItem As System.Windows.Forms.ToolStripMenuItem
-    Friend WithEvents ToolStripSeparator6 As System.Windows.Forms.ToolStripSeparator
     Friend WithEvents AboutToolStripMenuItem As System.Windows.Forms.ToolStripMenuItem
     Friend WithEvents SplitContainer As System.Windows.Forms.SplitContainer
     Friend WithEvents TreeView As System.Windows.Forms.TreeView
@@ -140,10 +138,6 @@ Partial Class Explorer
         Me.ListenToolStripMenuItem = New System.Windows.Forms.ToolStripMenuItem()
         Me.TraceLogToolStripMenuItem = New System.Windows.Forms.ToolStripMenuItem()
         Me.HelpToolStripMenuItem = New System.Windows.Forms.ToolStripMenuItem()
-        Me.ContentsToolStripMenuItem = New System.Windows.Forms.ToolStripMenuItem()
-        Me.ToolStripSeparator6 = New System.Windows.Forms.ToolStripSeparator()
-        Me.DonateToolStripMenuItem = New System.Windows.Forms.ToolStripMenuItem()
-        Me.LicenseToolStripMenuItem = New System.Windows.Forms.ToolStripMenuItem()
         Me.AboutToolStripMenuItem = New System.Windows.Forms.ToolStripMenuItem()
         Me.ToolStrip = New System.Windows.Forms.ToolStrip()
         Me.FoldersToolStripButton = New System.Windows.Forms.ToolStripButton()
@@ -312,6 +306,7 @@ Partial Class Explorer
         Me.ListView.FullRowSelect = True
         Me.ListView.GridLines = True
         Me.ListView.Groups.AddRange(New System.Windows.Forms.ListViewGroup() {CType(resources.GetObject("ListView.Groups"), System.Windows.Forms.ListViewGroup), CType(resources.GetObject("ListView.Groups1"), System.Windows.Forms.ListViewGroup), CType(resources.GetObject("ListView.Groups2"), System.Windows.Forms.ListViewGroup)})
+        Me.ListView.HideSelection = False
         Me.ListView.LargeImageList = Me.ListViewLargeImageList
         Me.ListView.Name = "ListView"
         Me.ListView.SmallImageList = Me.ListViewSmallImageList
@@ -639,34 +634,16 @@ Partial Class Explorer
         '
         'HelpToolStripMenuItem
         '
-        Me.HelpToolStripMenuItem.DropDownItems.AddRange(New System.Windows.Forms.ToolStripItem() {Me.ContentsToolStripMenuItem, Me.ToolStripSeparator6, Me.DonateToolStripMenuItem, Me.LicenseToolStripMenuItem, Me.AboutToolStripMenuItem})
+        Me.HelpToolStripMenuItem.DropDownItems.AddRange(New System.Windows.Forms.ToolStripItem() {Me.AboutToolStripMenuItem})
         Me.HelpToolStripMenuItem.Name = "HelpToolStripMenuItem"
         resources.ApplyResources(Me.HelpToolStripMenuItem, "HelpToolStripMenuItem")
-        '
-        'ContentsToolStripMenuItem
-        '
-        Me.ContentsToolStripMenuItem.Name = "ContentsToolStripMenuItem"
-        resources.ApplyResources(Me.ContentsToolStripMenuItem, "ContentsToolStripMenuItem")
-        '
-        'ToolStripSeparator6
-        '
-        Me.ToolStripSeparator6.Name = "ToolStripSeparator6"
-        resources.ApplyResources(Me.ToolStripSeparator6, "ToolStripSeparator6")
-        '
-        'DonateToolStripMenuItem
-        '
-        Me.DonateToolStripMenuItem.Name = "DonateToolStripMenuItem"
-        resources.ApplyResources(Me.DonateToolStripMenuItem, "DonateToolStripMenuItem")
-        '
-        'LicenseToolStripMenuItem
-        '
-        Me.LicenseToolStripMenuItem.Name = "LicenseToolStripMenuItem"
-        resources.ApplyResources(Me.LicenseToolStripMenuItem, "LicenseToolStripMenuItem")
+        Me.HelpToolStripMenuItem.Text = "帮助"
         '
         'AboutToolStripMenuItem
         '
         Me.AboutToolStripMenuItem.Name = "AboutToolStripMenuItem"
         resources.ApplyResources(Me.AboutToolStripMenuItem, "AboutToolStripMenuItem")
+        Me.AboutToolStripMenuItem.Text = "关于"
         '
         'ToolStrip
         '
@@ -921,7 +898,6 @@ Partial Class Explorer
     Friend WithEvents SmallIconsToolStripMenuItem1 As System.Windows.Forms.ToolStripMenuItem
     Friend WithEvents TileToolStripMenuItem1 As System.Windows.Forms.ToolStripMenuItem
     Friend WithEvents HotToolStripButton As System.Windows.Forms.ToolStripButton
-    Friend WithEvents LicenseToolStripMenuItem As System.Windows.Forms.ToolStripMenuItem
     Friend WithEvents MinimizeToTaskTrayToolStripMenuItem As System.Windows.Forms.ToolStripMenuItem
     Friend WithEvents NotifyIcon1 As System.Windows.Forms.NotifyIcon
     Friend WithEvents ContextMenuStripTray As System.Windows.Forms.ContextMenuStrip
@@ -940,7 +916,6 @@ Partial Class Explorer
     Friend WithEvents WakeUpToolStripMenuItem1 As System.Windows.Forms.ToolStripMenuItem
     Friend WithEvents ShutDownToolStripMenuItem1 As System.Windows.Forms.ToolStripMenuItem
     Friend WithEvents Note As System.Windows.Forms.ColumnHeader
-    Friend WithEvents DonateToolStripMenuItem As System.Windows.Forms.ToolStripMenuItem
     Friend WithEvents ResetWindowLayoutToolStripMenuItem1 As System.Windows.Forms.ToolStripMenuItem
     Friend WithEvents EventLogToolStripMenuItem As System.Windows.Forms.ToolStripMenuItem
     Friend WithEvents EventLogToolStripButton As System.Windows.Forms.ToolStripButton

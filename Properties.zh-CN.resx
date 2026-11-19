@@ -257,7 +257,7 @@
     <value>44, 13</value>
   </data>
   <data name="lbIP.Text" xml:space="preserve">
-    <value>本地IP地址</value>
+    <value>目标机 IP</value>
   </data>
   <data name="lbLeaveBlank.Size" type="System.Drawing.Size, System.Drawing">
     <value>120, 13</value>

@@ -17,13 +17,233 @@
 '    along with WakeOnLAN.  If not, see <http://www.gnu.org/licenses/>.
 
 Imports Machines
+Imports System.Linq
+Imports System.Text
+Imports System.Threading.Tasks
 
 Public Class Properties
+    Private Shared _remoteConfigRunning As Boolean
+    Private ReadOnly _wmiAllowedAddresses As New TextBox()
     Private _previousHostName As String
     Private ReadOnly _encryption As New Encryption()
 
+    Public Sub New()
+        InitializeComponent()
+
+        Dim remoteConfigButton As New Button With {
+            .Text = "Remote Config",
+            .AutoSize = True,
+            .Location = New Drawing.Point(tDomain.Right + 8, tDomain.Top),
+            .CausesValidation = False,
+            .UseVisualStyleBackColor = True
+        }
+        AddHandler remoteConfigButton.Click,
+            Sub(sender, e) ConfigureRemoteHost(Me, tHostURI.Text, IP.Text, tUserId.Text, tPassword.Text, tDomain.Text,
+                                              _wmiAllowedAddresses.Text)
+        TabShutdown.Controls.Add(remoteConfigButton)
+        Dim winRmSetupButton As New Button With {
+            .Text = "开通 WinRM",
+            .AutoSize = True,
+            .Location = New Drawing.Point(remoteConfigButton.Left + remoteConfigButton.GetPreferredSize(Drawing.Size.Empty).Width + 6, remoteConfigButton.Top),
+            .CausesValidation = False,
+            .UseVisualStyleBackColor = True
+        }
+        AddHandler winRmSetupButton.Click, AddressOf ShowWinRmSetup
+        TabShutdown.Controls.Add(winRmSetupButton)
+
+        Dim allowedSourcesLabel As New Label With {
+            .Text = If(Globalization.CultureInfo.CurrentUICulture.TwoLetterISOLanguageName = "zh",
+                       "WMI 允许来源 IP", "Allowed WMI source IPs"),
+            .AutoSize = True,
+            .Location = New Drawing.Point(lbShutdownCommand.Left, tDomain.Bottom + 10)
+        }
+        _wmiAllowedAddresses.Location = New Drawing.Point(allowedSourcesLabel.Right + 8, allowedSourcesLabel.Top - 3)
+        _wmiAllowedAddresses.Width = TextBox_Command.Right - _wmiAllowedAddresses.Left
+        _wmiAllowedAddresses.AccessibleName = allowedSourcesLabel.Text
+        TabShutdown.Controls.AddRange({allowedSourcesLabel, _wmiAllowedAddresses})
+    End Sub
+
+    Private Sub ShowWinRmSetup(sender As Object, e As EventArgs)
+        Dim target As Net.IPAddress = Nothing
+        If Not Net.IPAddress.TryParse(tHostURI.Text.Trim(), target) Then
+            Net.IPAddress.TryParse(IP.Text.Trim(), target)
+        End If
+        Dim account As String = tUserId.Text.Trim()
+        If Not String.IsNullOrWhiteSpace(tDomain.Text) AndAlso Not account.Contains("\") AndAlso Not account.Contains("@") Then
+            account = tDomain.Text.Trim() & "\" & account
+        End If
+        Using wizard As New WinRmSetup(target, account, tPassword.Text)
+            wizard.ShowDialog(Me)
+        End Using
+    End Sub
+
+    Friend Shared Async Sub ConfigureRemoteHost(owner As Form, computerName As String,
+                                                targetAddress As String, userName As String,
+                                                password As String, domain As String, allowedSources As String,
+                                                Optional useHttp As Boolean = False)
+        Const title As String = "Remote Config"
+        If _remoteConfigRunning Then Return
+
+        computerName = computerName.Trim()
+        If String.IsNullOrWhiteSpace(computerName) Then computerName = targetAddress.Trim()
+        userName = userName.Trim()
+        If String.IsNullOrWhiteSpace(computerName) OrElse String.IsNullOrWhiteSpace(userName) OrElse
+            (Not useHttp AndAlso String.IsNullOrEmpty(password)) Then
+            MessageBox.Show(owner, "Enter the target host and its administrator credentials in Host Properties.",
+                            title, MessageBoxButtons.OK, MessageBoxIcon.Information)
+            Return
+        End If
+        If Not String.IsNullOrWhiteSpace(domain) AndAlso Not userName.Contains("\") AndAlso Not userName.Contains("@") Then
+            userName = domain.Trim() & "\" & userName
+        End If
+
+        Dim address As Net.IPAddress = Nothing
+        If useHttp AndAlso Net.IPAddress.TryParse(computerName, address) Then
+            MessageBox.Show(owner, "WinRM HTTP with Kerberos requires the target DNS hostname. Set it in Host Properties.",
+                            title, MessageBoxButtons.OK, MessageBoxIcon.Information)
+            Return
+        End If
+        If Net.IPAddress.TryParse(computerName, address) Then targetAddress = computerName
+        targetAddress = Interaction.InputBox("Enter the target PC IPv4 address.", title, targetAddress).Trim()
+        If targetAddress.Length = 0 Then Return
+        If Not Net.IPAddress.TryParse(targetAddress, address) OrElse
+            address.AddressFamily <> Net.Sockets.AddressFamily.InterNetwork Then
+            MessageBox.Show(owner, "Enter a valid target IPv4 address.", title, MessageBoxButtons.OK, MessageBoxIcon.Warning)
+            Return
+        End If
+
+        If String.IsNullOrWhiteSpace(allowedSources) Then
+            allowedSources = Interaction.InputBox(
+                "Enter the controller IP addresses allowed through the target WMI firewall, separated by commas.", title)
+        End If
+        If String.IsNullOrWhiteSpace(allowedSources) Then Return
+        Dim allowed As String() = ParseAllowedSources(allowedSources)
+        If allowed Is Nothing Then
+            MessageBox.Show(owner, "请输入有效的控制端 IP 地址，多个地址用逗号分隔。",
+                            title, MessageBoxButtons.OK, MessageBoxIcon.Warning)
+            Return
+        End If
+
+        Dim confirmation As String = $"Configure WMI shutdown on {computerName} ({targetAddress}) for {userName}?" &
+            vbCrLf & $"Allowed controllers: {String.Join(", ", allowed)}" & vbCrLf & vbCrLf &
+            "This changes the target's WMI, DCOM, firewall, and local administrator remote access settings. " &
+            "First-time setup saves a backup on the target. For an existing configuration, only the allowed WMI source IPs are updated. " &
+            If(useHttp, "WinRM HTTP must already be available. The current Windows account needs remote administrator access via Kerberos.",
+                        "WinRM over HTTPS must already be available.")
+        If MessageBox.Show(owner, confirmation, title, MessageBoxButtons.YesNo, MessageBoxIcon.Warning,
+                           MessageBoxDefaultButton.Button2) <> DialogResult.Yes Then Return
+
+        Dim mainWindow As Form = Application.OpenForms.OfType(Of Explorer)().FirstOrDefault()
+        Dim result As Tuple(Of Boolean, String)
+        _remoteConfigRunning = True
+        Try
+            result = Await System.Threading.Tasks.Task.Run(
+                Function() RunRemoteConfig(computerName, targetAddress, userName, password, allowed, useHttp))
+        Catch ex As Exception
+            result = Tuple.Create(False, ex.Message)
+        Finally
+            _remoteConfigRunning = False
+        End Try
+
+        Dim resultOwner As Form = GetRemoteConfigResultOwner(owner, mainWindow)
+        If resultOwner Is Nothing Then Return
+        MessageBox.Show(resultOwner, result.Item2, title, MessageBoxButtons.OK,
+                        If(result.Item1, MessageBoxIcon.Information, MessageBoxIcon.Error))
+    End Sub
+
+    Private Shared Function GetRemoteConfigResultOwner(owner As Form, mainWindow As Form) As Form
+        For Each candidate As Form In {owner, mainWindow}
+            If candidate IsNot Nothing AndAlso Not candidate.IsDisposed AndAlso
+                Not candidate.Disposing AndAlso candidate.IsHandleCreated Then Return candidate
+        Next
+        Return Nothing
+    End Function
+
+    Friend Shared Function RunRemoteConfig(computerName As String, targetAddress As String, userName As String,
+                                           password As String, allowed As String(), useHttp As Boolean,
+                                           Optional verifyOnly As Boolean = False) As Tuple(Of Boolean, String)
+        Dim configScript As String = ReadRemoteConfigResource("Configure-RemoteWmi.ps1")
+        Dim launcher As String = ReadRemoteConfigResource("Invoke-RemoteWmiConfig.ps1")
+        Dim windows As String = Environment.GetFolderPath(Environment.SpecialFolder.Windows)
+        Dim systemFolder As String = If(Environment.Is64BitOperatingSystem AndAlso Not Environment.Is64BitProcess,
+                                        "Sysnative", "System32")
+        Dim startInfo As New ProcessStartInfo With {
+            .FileName = IO.Path.Combine(windows, systemFolder, "WindowsPowerShell\v1.0\powershell.exe"),
+            .Arguments = "-NoLogo -NoProfile -NonInteractive -EncodedCommand " &
+                Convert.ToBase64String(Encoding.Unicode.GetBytes(launcher)),
+            .UseShellExecute = False,
+            .CreateNoWindow = True,
+            .RedirectStandardInput = True,
+            .RedirectStandardOutput = True,
+            .RedirectStandardError = True,
+            .StandardOutputEncoding = Encoding.UTF8,
+            .StandardErrorEncoding = Encoding.UTF8
+        }
+        Using child As Process = Process.Start(startInfo)
+            Dim stdout As Task(Of String) = child.StandardOutput.ReadToEndAsync()
+            Dim stderr As Task(Of String) = child.StandardError.ReadToEndAsync()
+            Using input As IO.StreamWriter = child.StandardInput
+                For Each value As String In {If(useHttp, "HTTP", "HTTPS"), computerName, targetAddress, userName, password, String.Join(",", allowed), configScript, If(verifyOnly, "Verify", "Apply")}
+                    input.WriteLine(Convert.ToBase64String(Encoding.UTF8.GetBytes(value)))
+                Next
+            End Using
+            child.WaitForExit()
+            Dim output As String = stdout.GetAwaiter().GetResult().Trim()
+            Dim errors As String = stderr.GetAwaiter().GetResult().Trim()
+            If child.ExitCode = 0 Then Return Tuple.Create(True, output)
+
+            Dim summary As String
+            If child.ExitCode = 2 Then
+                Dim endpoint As String = If(useHttp, "WinRM HTTP (TCP 5985)", "WinRM HTTPS (TCP 5986)")
+                Dim requirement As String = If(useHttp,
+                    "Check the firewall, target DNS hostname, and Kerberos administrator access.",
+                    "Check the target HTTPS listener, firewall, and that the certificate is trusted and matches the connection address.")
+                summary = If(verifyOnly, $"无法连接 {computerName} 的 {endpoint}。验证未开始。",
+                             $"无法连接 {computerName} 的 {endpoint}。未运行配置脚本。") & vbCrLf & requirement
+            ElseIf child.ExitCode = 3 Then
+                summary = If(verifyOnly, $"已连接 {computerName}，但 Remote Config 验证未通过。",
+                             $"已连接 {computerName}，但远程配置未完成。请查看下方输出和目标机备份路径。")
+            Else
+                summary = "无法启动远程配置。请查看 PowerShell 输出。"
+            End If
+
+            Dim details As String = (output & vbCrLf & errors).Trim()
+            Return Tuple.Create(False, summary & vbCrLf & vbCrLf & details)
+        End Using
+    End Function
+
+    Friend Shared Function ReadRemoteConfigResource(name As String) As String
+        Using stream As IO.Stream = GetType(Properties).Assembly.GetManifestResourceStream(name)
+            If stream Is Nothing Then Throw New IO.FileNotFoundException("Missing Remote Config resource: " & name)
+            Using reader As New IO.StreamReader(stream)
+                Return reader.ReadToEnd()
+            End Using
+        End Using
+    End Function
+
+    Private Shared Function ParseAllowedSources(value As String) As String()
+        Dim addresses As New System.Collections.Generic.List(Of String)()
+        For Each entry As String In value.Split(","c, "，"c)
+            Dim address As Net.IPAddress = Nothing
+            If Not Net.IPAddress.TryParse(entry.Trim(), address) OrElse address.Equals(Net.IPAddress.Any) OrElse
+                address.Equals(Net.IPAddress.IPv6Any) Then Return Nothing
+            addresses.Add(address.ToString())
+        Next
+        Return addresses.Distinct().ToArray()
+    End Function
+
     Private Sub OK_Button_Click(ByVal sender As Object, ByVal e As EventArgs) Handles OK_Button.Click
         Dim m As New Machine
+        If Not String.IsNullOrWhiteSpace(_wmiAllowedAddresses.Text) Then
+            Dim allowed As String() = ParseAllowedSources(_wmiAllowedAddresses.Text)
+            If allowed Is Nothing Then
+                MessageBox.Show(Me, "请输入有效的控制端 IP 地址，多个地址用逗号分隔。",
+                                "Remote Config", MessageBoxButtons.OK, MessageBoxIcon.Warning)
+                _wmiAllowedAddresses.Focus()
+                Return
+            End If
+            m.WmiAllowedAddresses = String.Join(", ", allowed)
+        End If
 
         Try
             Machines.Remove(_previousHostName)
@@ -78,6 +298,7 @@ Public Class Properties
             Delete_Button.Visible = False
             cbKeepAlive.Checked = False
             IP.Text = String.Empty
+            _wmiAllowedAddresses.Clear()
             Broadcast.Text = Net.IPAddress.Broadcast.ToString()
             rbIP.Checked = True
             UDPPort.Text = "9"
@@ -104,6 +325,7 @@ Public Class Properties
         MachineName.Text = m.Name
         MAC.Text = m.MAC
         IP.Text = m.IP
+        _wmiAllowedAddresses.Text = m.WmiAllowedAddresses
         Broadcast.Text = m.Broadcast
         tHostURI.Text = m.Netbios
         cbKeepAlive.Checked = m.KeepAlive
